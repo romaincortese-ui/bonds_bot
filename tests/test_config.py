@@ -16,6 +16,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.paper_trade)
         self.assertFalse(config.has_oanda_credentials)
         self.assertEqual(config.universe, DEFAULT_UNIVERSE)
+        self.assertEqual(config.scan_interval_seconds, 3600)
 
     def test_list_variables_accept_commas_or_whitespace(self) -> None:
         env = {"BONDS_UNIVERSE": "US2Y US5Y,US10Y", "BONDS_STRATEGIES": "DURATION_TREND CARRY_ROLLDOWN"}

@@ -141,7 +141,7 @@ class BondsConfig:
             state_file=Path(os.environ.get("BONDS_STATE_FILE", "runtime_state.json")),
             universe=_csv("BONDS_UNIVERSE", DEFAULT_UNIVERSE),
             strategies=_csv("BONDS_STRATEGIES", DEFAULT_STRATEGIES),
-            scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 300),
+            scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 3600),
             run_once=_bool("RUN_ONCE", False),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
             max_portfolio_dv01_nav_10bp=_float("MAX_PORTFOLIO_DV01_NAV_10BP", 0.0025),
