@@ -12,6 +12,85 @@ from bondsbot.strategies import generate_signal
 from bondsbot.telegram import TelegramNotifier
 
 
+def _side_label(side: str) -> str:
+    return "🟢 LONG" if side.upper() == "LONG" else "🔴 SHORT"
+
+
+def _provider_label(provider: str) -> str:
+    return "📡 OANDA" if provider == "oanda" else "🧪 Fixture"
+
+
+def _pretty_strategy(strategy: str) -> str:
+    return strategy.replace("_", " ").title()
+
+
+def _format_time(value: object) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return str(value)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _format_scan_message(snapshot: dict[str, object], config: BondsConfig) -> str:
+    counts = snapshot.get("data_provider_counts", {})
+    oanda_count = int(counts.get("oanda", 0)) if isinstance(counts, dict) else 0
+    fixture_count = int(counts.get("fixture", 0)) if isinstance(counts, dict) else 0
+    total_count = max(oanda_count + fixture_count, len(config.universe))
+    mapped = snapshot.get("mapped_oanda_instruments", {})
+    mapped_count = len(mapped) if isinstance(mapped, dict) else 0
+    failures = snapshot.get("failures", [])
+    failure_count = len(failures) if isinstance(failures, list) else 0
+    research_only = bool(snapshot.get("research_only", False))
+    if research_only:
+        mode_icon = "🟠"
+        mode_text = "RESEARCH ONLY"
+    elif config.paper_trade:
+        mode_icon = "🧪"
+        mode_text = "PAPER"
+    else:
+        mode_icon = "🔴"
+        mode_text = "LIVE config"
+    execution = "signals only" if not research_only else "research signals"
+    risk_caps = snapshot.get("risk_caps", {}) if isinstance(snapshot.get("risk_caps", {}), dict) else {}
+
+    lines = [
+        "🏦 Bonds Bot",
+        f"{mode_icon} Mode: {mode_text} | Execution: {execution}",
+        f"🕒 Scan: {_format_time(snapshot.get('time', ''))}",
+        f"📊 Data: OANDA {oanda_count}/{total_count} | Fixture {fixture_count}/{total_count} | Mapped {mapped_count}/{total_count} | Tradeable {snapshot.get('tradeable_instrument_count', 0)}",
+        (
+            "🛡️ DV01 caps: "
+            f"Portfolio {float(risk_caps.get('portfolio_dv01', 0.0)):.2f} | "
+            f"Country {float(risk_caps.get('country_dv01', 0.0)):.2f} | "
+            f"Tenor {float(risk_caps.get('tenor_dv01', 0.0)):.2f}"
+        ),
+    ]
+    if failure_count:
+        failed_symbols = ", ".join(str(item).split(":", 1)[0] for item in failures[:3]) if isinstance(failures, list) else "some symbols"
+        suffix = "" if failure_count <= 3 else f" +{failure_count - 3} more"
+        lines.append(f"⚠️ Fallbacks: {failure_count} OANDA fetch issue(s): {failed_symbols}{suffix}")
+
+    top_signals = snapshot.get("top_signals", [])
+    if isinstance(top_signals, list) and top_signals:
+        lines.append("")
+        lines.append("🏆 Top Rates Signals")
+        for index, row in enumerate(top_signals[:5], start=1):
+            if not isinstance(row, dict):
+                continue
+            provider = str(row.get("data_provider", "fixture"))
+            instrument = row.get("oanda_instrument")
+            instrument_text = f" | {instrument}" if provider == "oanda" and instrument else ""
+            lines.append(
+                f"{index}. {_side_label(str(row.get('side', '')))} {row.get('canonical', '?')} ({row.get('country', '?')} {row.get('tenor', '?')}) | Score {float(row.get('score', 0.0)):.1f} | {_provider_label(provider)}{instrument_text}"
+            )
+            lines.append(f"   ↳ {_pretty_strategy(str(row.get('strategy', '')))}")
+    else:
+        lines.append("😴 No qualified rates signals this scan.")
+
+    return "\n".join(lines)
+
+
 def run_scan(config: BondsConfig, client: OandaClient, state_store: StateStore, notifier: TelegramNotifier) -> dict[str, object]:
     state = state_store.load()
     tradeable: set[str] = set()
@@ -78,6 +157,7 @@ def run_scan(config: BondsConfig, client: OandaClient, state_store: StateStore, 
                 "country": signal.country,
                 "tenor": signal.tenor_bucket,
                 "data_provider": signal.metadata.get("data_provider", "fixture"),
+                "oanda_instrument": signal.metadata.get("oanda_instrument", ""),
             }
             for signal in signals[:5]
         ],
@@ -85,9 +165,7 @@ def run_scan(config: BondsConfig, client: OandaClient, state_store: StateStore, 
     state["last_snapshot"] = snapshot
     state_store.save(state)
 
-    message = "Bonds bot scan complete\n" + "\n".join(
-        f"{row['canonical']} {row['side']} score={row['score']} {row['strategy']} {row['data_provider']}" for row in snapshot["top_signals"]
-    )
+    message = _format_scan_message(snapshot, config)
     print(message, flush=True)
     notifier.send(message)
     return snapshot
