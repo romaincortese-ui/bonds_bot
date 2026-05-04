@@ -57,6 +57,13 @@ def _format_live_issue(row: dict[str, object]) -> str:
     return f"{subject} | {stage}: {text}"
 
 
+def _signed_oanda_units(units: float, side: str) -> int:
+    whole_units = int(abs(units))
+    if whole_units < 1:
+        return 0
+    return whole_units if side.upper() == "LONG" else -whole_units
+
+
 def _coerce_time(value: object) -> datetime:
     if isinstance(value, datetime):
         return value
@@ -189,7 +196,10 @@ def _execute_live_orders(signals: list[RatesSignal], config: BondsConfig, client
         position = position_from_signal(signal, equity, positions, config)
         if position.units <= 0 or position.dv01 <= 0:
             continue
-        signed_units = position.units if signal.side.upper() == "LONG" else -position.units
+        signed_units = _signed_oanda_units(position.units, signal.side)
+        if signed_units == 0:
+            errors.append({"canonical": signal.canonical, "stage": "units", "reason": "position_size_below_one_oanda_unit"})
+            continue
         try:
             response = client.place_market_order(
                 instrument,
