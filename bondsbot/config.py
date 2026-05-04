@@ -112,6 +112,7 @@ class BondsConfig:
     universe: tuple[str, ...]
     strategies: tuple[str, ...]
     scan_interval_seconds: int
+    heartbeat_seconds: int
     run_once: bool
     max_open_positions: int
     max_portfolio_dv01_nav_10bp: float
@@ -141,7 +142,8 @@ class BondsConfig:
             state_file=Path(os.environ.get("BONDS_STATE_FILE", "runtime_state.json")),
             universe=_csv("BONDS_UNIVERSE", DEFAULT_UNIVERSE),
             strategies=_csv("BONDS_STRATEGIES", DEFAULT_STRATEGIES),
-            scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 3600),
+            scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 300),
+            heartbeat_seconds=_int("BONDS_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", 3600)),
             run_once=_bool("RUN_ONCE", False),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
             max_portfolio_dv01_nav_10bp=_float("MAX_PORTFOLIO_DV01_NAV_10BP", 0.0025),
