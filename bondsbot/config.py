@@ -108,6 +108,7 @@ class BondsConfig:
     oanda_account_id: str
     oanda_api_token: str
     paper_trade: bool
+    live_trading_enabled: bool
     state_file: Path
     universe: tuple[str, ...]
     strategies: tuple[str, ...]
@@ -115,6 +116,7 @@ class BondsConfig:
     heartbeat_seconds: int
     run_once: bool
     max_open_positions: int
+    max_live_orders_per_scan: int
     max_portfolio_dv01_nav_10bp: float
     max_country_dv01_nav_10bp: float
     max_tenor_dv01_nav_10bp: float
@@ -134,11 +136,13 @@ class BondsConfig:
 
     @classmethod
     def from_env(cls) -> "BondsConfig":
+        paper_trade = _bool("PAPER_TRADE", True)
         return cls(
             oanda_env=os.environ.get("OANDA_ENV", "practice").strip().lower(),
             oanda_account_id=os.environ.get("OANDA_ACCOUNT_ID", "").strip(),
             oanda_api_token=os.environ.get("OANDA_API_TOKEN", "").strip(),
-            paper_trade=_bool("PAPER_TRADE", True),
+            paper_trade=paper_trade,
+            live_trading_enabled=_bool("LIVE_TRADING_ENABLED", not paper_trade),
             state_file=Path(os.environ.get("BONDS_STATE_FILE", "runtime_state.json")),
             universe=_csv("BONDS_UNIVERSE", DEFAULT_UNIVERSE),
             strategies=_csv("BONDS_STRATEGIES", DEFAULT_STRATEGIES),
@@ -146,6 +150,7 @@ class BondsConfig:
             heartbeat_seconds=_int("BONDS_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", 3600)),
             run_once=_bool("RUN_ONCE", False),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
+            max_live_orders_per_scan=_int("MAX_LIVE_ORDERS_PER_SCAN", 1),
             max_portfolio_dv01_nav_10bp=_float("MAX_PORTFOLIO_DV01_NAV_10BP", 0.0025),
             max_country_dv01_nav_10bp=_float("MAX_COUNTRY_DV01_NAV_10BP", 0.0015),
             max_tenor_dv01_nav_10bp=_float("MAX_TENOR_DV01_NAV_10BP", 0.0010),
