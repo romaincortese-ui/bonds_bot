@@ -6,16 +6,20 @@ from datetime import datetime, timezone
 
 from bondsbot.config import BondsConfig
 from bondsbot.models import RatesSignal
-from bondsbot.runtime import _execute_live_orders, _format_boot_message, _format_scan_message, _send_trade_lifecycle_alerts, _should_send_heartbeat
+from bondsbot.runtime import _execute_live_orders, _format_boot_message, _format_scan_message, _poll_telegram_commands, _send_trade_lifecycle_alerts, _should_send_heartbeat
 
 
 class FakeOandaClient:
     def __init__(self) -> None:
         self.orders: list[dict[str, object]] = []
         self.tradeable = True
+        self.open_position_symbols: set[str] = set()
+
+    def account_nav(self) -> float:
+        return 10000.0
 
     def open_positions(self) -> set[str]:
-        return set()
+        return set(self.open_position_symbols)
 
     def instrument_tradeable(self, instrument: str) -> tuple[bool, str]:
         return self.tradeable, "tradeable" if self.tradeable else "pricing_status_non_tradeable"
@@ -26,11 +30,35 @@ class FakeOandaClient:
 
 
 class FakeNotifier:
-    def __init__(self) -> None:
+    def __init__(self, updates: list[dict[str, object]] | None = None, chat_id: str = "chat") -> None:
+        self.chat_id = chat_id
+        self.updates = updates or []
+        self.update_offsets: list[int] = []
         self.messages: list[tuple[str, str | None]] = []
+
+    @property
+    def enabled(self) -> bool:
+        return True
 
     def send(self, message: str, parse_mode: str | None = None) -> None:
         self.messages.append((message, parse_mode))
+
+    def get_updates(self, offset: int, timeout: int = 1) -> list[dict[str, object]]:
+        self.update_offsets.append(offset)
+        return self.updates
+
+
+class FakeStateStore:
+    def __init__(self, state: dict[str, object]) -> None:
+        self.state = state
+        self.saved: list[dict[str, object]] = []
+
+    def load(self) -> dict[str, object]:
+        return self.state
+
+    def save(self, state: dict[str, object]) -> None:
+        self.state = state
+        self.saved.append(dict(state))
 
 
 def _live_config() -> BondsConfig:
@@ -120,6 +148,69 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertIn("Universe: 2 instruments", message)
         self.assertIn("Open positions from state: 1", message)
         self.assertIn("Started: 2026-05-05 19:00 UTC", message)
+
+    def test_status_command_replies_to_authorized_chat(self) -> None:
+        config = _live_config()
+        state: dict[str, object] = {
+            "last_snapshot": {
+                "time": "2026-05-05T19:00:00+00:00",
+                "data_provider_counts": {"oanda": 1, "fixture": 1},
+                "mapped_oanda_instruments": {"US10Y": "USB10Y_USD"},
+                "tradeable_instrument_count": 6,
+                "risk_caps": {"portfolio_dv01": 2.5, "country_dv01": 1.5, "tenor_dv01": 1.0},
+                "top_signals": [{"canonical": "US10Y", "side": "SHORT", "score": 88.0, "data_provider": "oanda"}],
+            },
+            "open_positions": [
+                {
+                    "canonical": "US10Y",
+                    "instrument": "USB10Y_USD",
+                    "side": "SHORT",
+                    "strategy": "DURATION_TREND",
+                    "units": 8.0,
+                    "entry_price": 96.0,
+                    "entry_yield_bps": 395.0,
+                    "dv01": 0.25,
+                    "stop_price": 97.0,
+                    "take_profit_price": 94.0,
+                    "opened_at": "2026-05-04T17:00:00+00:00",
+                    "country": "US",
+                    "tenor_bucket": "10Y",
+                    "order_id": "trade-1",
+                    "metadata": {},
+                }
+            ],
+        }
+        client = FakeOandaClient()
+        client.open_position_symbols = {"USB10Y_USD"}
+        notifier = FakeNotifier(
+            updates=[{"update_id": 42, "message": {"text": "/status", "chat": {"id": "chat"}}}],
+            chat_id="chat",
+        )
+        state_store = FakeStateStore(state)
+
+        _poll_telegram_commands(config, client, state_store, notifier)
+
+        self.assertEqual(notifier.update_offsets, [1])
+        self.assertEqual(state_store.state["last_telegram_update_id"], 42)
+        self.assertEqual(len(notifier.messages), 1)
+        message, parse_mode = notifier.messages[0]
+        self.assertEqual(parse_mode, "HTML")
+        self.assertIn("<b>Bonds Status</b>", message)
+        self.assertIn("Open positions: 1", message)
+        self.assertIn("Top signal: SHORT US10Y", message)
+
+    def test_status_command_ignores_other_chats(self) -> None:
+        config = _live_config()
+        notifier = FakeNotifier(
+            updates=[{"update_id": 9, "message": {"text": "/status", "chat": {"id": "other"}}}],
+            chat_id="chat",
+        )
+        state_store = FakeStateStore({})
+
+        _poll_telegram_commands(config, FakeOandaClient(), state_store, notifier)
+
+        self.assertEqual(notifier.messages, [])
+        self.assertEqual(state_store.state["last_telegram_update_id"], 9)
 
     def test_live_config_executes_oanda_signal_with_brackets(self) -> None:
         config = _live_config()

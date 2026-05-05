@@ -16,6 +16,8 @@ from bondsbot.telegram import TelegramNotifier
 
 
 LAST_HEARTBEAT_AT_KEY = "last_telegram_heartbeat_at"
+LAST_TELEGRAM_UPDATE_ID_KEY = "last_telegram_update_id"
+TELEGRAM_POLL_SECONDS = 5.0
 
 
 def _side_label(side: str) -> str:
@@ -107,6 +109,17 @@ def _format_live_issue(row: dict[str, object]) -> str:
     if len(text) > 160:
         text = text[:157] + "..."
     return f"{subject} | {stage}: {text}"
+
+
+def _format_help_message() -> str:
+    return "\n".join(
+        [
+            "📋 <b>Bonds Bot Commands</b>",
+            "/status — Bot, account, scan, and open positions",
+            "/positions — Open positions only",
+            "/help — This message",
+        ]
+    )
 
 
 def _signed_oanda_units(units: float, side: str) -> int:
@@ -447,6 +460,157 @@ def _format_scan_message(snapshot: dict[str, object], config: BondsConfig) -> st
     return "\n".join(lines)
 
 
+def _format_positions_message(config: BondsConfig, state: dict[str, Any]) -> str:
+    rows = _state_position_rows(state)
+    if not rows:
+        return "📭 <b>No open bond positions.</b>"
+    lines = ["📂 <b>Bond Positions</b>", "━━━━━━━━━━━━━━━"]
+    for row in rows[:10]:
+        side = str(row.get("side") or "?").upper()
+        side_icon = "🟢" if side == "LONG" else "🔴"
+        lines.append(
+            f"{side_icon} {_html(row.get('canonical') or '?')} | {_html(row.get('instrument') or '?')} | "
+            f"units {_format_amount(row.get('units'), 2)} | DV01 {_format_amount(row.get('dv01'), 4)}"
+        )
+        lines.append(
+            f"   Entry {_format_price(row.get('entry_price'))} | TP {_format_price(row.get('take_profit_price'))} | "
+            f"SL {_format_price(row.get('stop_price'))}"
+        )
+    if len(rows) > 10:
+        lines.append(f"+{len(rows) - 10} more")
+    return "\n".join(lines)
+
+
+def _format_status_message(config: BondsConfig, state: dict[str, Any], equity: float | None = None, sync_errors: list[dict[str, object]] | None = None) -> str:
+    snapshot = state.get("last_snapshot", {})
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    counts = snapshot.get("data_provider_counts", {})
+    counts = counts if isinstance(counts, dict) else {}
+    oanda_count = int(counts.get("oanda", 0) or 0)
+    fixture_count = int(counts.get("fixture", 0) or 0)
+    total_count = max(oanda_count + fixture_count, len(config.universe))
+    live_errors = snapshot.get("live_order_errors", [])
+    live_error_count = len(live_errors) if isinstance(live_errors, list) else 0
+    failures = snapshot.get("failures", [])
+    failure_count = len(failures) if isinstance(failures, list) else 0
+    risk_caps = snapshot.get("risk_caps", {})
+    risk_caps = risk_caps if isinstance(risk_caps, dict) else {}
+    sync_errors = sync_errors or []
+    rows = _state_position_rows(state)
+    last_scan = _format_time(snapshot.get("time")) if snapshot.get("time") else "n/a"
+    equity_text = _format_amount(equity, 2) if equity is not None else "n/a"
+    research_only = bool(snapshot.get("research_only", False))
+    if research_only:
+        mode_icon = "🟠"
+        mode_text = "RESEARCH ONLY"
+    elif config.paper_trade:
+        mode_icon = "🧪"
+        mode_text = "PAPER"
+    else:
+        mode_icon = "🔴"
+        mode_text = "LIVE config"
+    lines = [
+        "📊 <b>Bonds Status</b>",
+        "━━━━━━━━━━━━━━━",
+        f"Mode: {mode_icon} {mode_text} | Execution: {_execution_label(config, research_only)}",
+        "Bot: ▶️ Running",
+        f"Equity/NAV: {equity_text}",
+        f"Open positions: {len(rows)} / {config.max_open_positions}",
+        f"Last scan: {last_scan}",
+        f"Data: OANDA {oanda_count}/{total_count} | Fixture {fixture_count}/{total_count}",
+        f"Mapped: {len(snapshot.get('mapped_oanda_instruments', {})) if isinstance(snapshot.get('mapped_oanda_instruments', {}), dict) else 0}/{total_count} | Tradeable {snapshot.get('tradeable_instrument_count', 0)}",
+        f"DV01 caps: portfolio {_format_amount(risk_caps.get('portfolio_dv01'), 4)} | country {_format_amount(risk_caps.get('country_dv01'), 4)} | tenor {_format_amount(risk_caps.get('tenor_dv01'), 4)}",
+        f"OANDA fetch issues: {failure_count} | Live order issues: {live_error_count} | Sync issues: {len(sync_errors)}",
+        f"Telegram: commands online",
+    ]
+    if rows:
+        lines.append("")
+        lines.append("📂 <b>Open positions</b>")
+        for row in rows[:5]:
+            side = str(row.get("side") or "?").upper()
+            side_icon = "🟢" if side == "LONG" else "🔴"
+            lines.append(
+                f"{side_icon} {_html(row.get('canonical') or '?')} | {_html(row.get('instrument') or '?')} | "
+                f"entry {_format_price(row.get('entry_price'))} | DV01 {_format_amount(row.get('dv01'), 4)}"
+            )
+    top_signals = snapshot.get("top_signals", [])
+    if isinstance(top_signals, list) and top_signals:
+        top = next((row for row in top_signals if isinstance(row, dict)), None)
+        if top:
+            lines.append("")
+            lines.append(
+                f"🏆 Top signal: {_html(top.get('side') or '?')} {_html(top.get('canonical') or '?')} | "
+                f"Score {_format_amount(top.get('score'), 1)} | {_html(top.get('data_provider') or '?')}"
+            )
+    return "\n".join(lines)
+
+
+def _handle_status_command(config: BondsConfig, client: OandaClient, state: dict[str, Any], notifier: TelegramNotifier) -> None:
+    sync_errors: list[dict[str, object]] = []
+    closed_positions: list[dict[str, object]] = []
+    if config.has_oanda_credentials:
+        _, _, sync_errors, closed_positions = _sync_open_position_rows(config, client, state)
+        state["last_closed_positions"] = closed_positions
+    equity = _account_equity(config, client, state)
+    if closed_positions:
+        _send_trade_lifecycle_alerts(notifier, [], closed_positions)
+    notifier.send(_format_status_message(config, state, equity, sync_errors), parse_mode="HTML")
+
+
+def _command_from_text(text: str) -> str:
+    if not text.strip():
+        return ""
+    command = text.strip().split()[0].lower()
+    return command.split("@", 1)[0]
+
+
+def _poll_telegram_commands(config: BondsConfig, client: OandaClient, state_store: StateStore, notifier: TelegramNotifier) -> None:
+    if not notifier.enabled:
+        return
+    state = state_store.load()
+    try:
+        last_update_id = int(state.get(LAST_TELEGRAM_UPDATE_ID_KEY, 0) or 0)
+    except (TypeError, ValueError):
+        last_update_id = 0
+    updates = notifier.get_updates(last_update_id + 1, timeout=1)
+    if not updates:
+        return
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        try:
+            last_update_id = max(last_update_id, int(update.get("update_id", last_update_id)))
+        except (TypeError, ValueError):
+            pass
+        message = update.get("message", {})
+        if not isinstance(message, dict):
+            continue
+        chat = message.get("chat", {})
+        chat_id = str(chat.get("id", "")) if isinstance(chat, dict) else ""
+        if chat_id != str(notifier.chat_id):
+            continue
+        command = _command_from_text(str(message.get("text") or ""))
+        if command == "/status":
+            _handle_status_command(config, client, state, notifier)
+        elif command == "/positions":
+            notifier.send(_format_positions_message(config, state), parse_mode="HTML")
+        elif command == "/help":
+            notifier.send(_format_help_message(), parse_mode="HTML")
+    state[LAST_TELEGRAM_UPDATE_ID_KEY] = last_update_id
+    state_store.save(state)
+
+
+def _sleep_with_telegram_polling(config: BondsConfig, client: OandaClient, state_store: StateStore, notifier: TelegramNotifier, seconds: float) -> None:
+    deadline = time.time() + max(0.0, seconds)
+    while True:
+        _poll_telegram_commands(config, client, state_store, notifier)
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(TELEGRAM_POLL_SECONDS, remaining))
+
+
 def _should_send_heartbeat(state: dict[str, object], now_ts: float, heartbeat_seconds: int) -> bool:
     try:
         last_sent = float(state.get(LAST_HEARTBEAT_AT_KEY, 0.0) or 0.0)
@@ -562,7 +726,8 @@ def run_bot() -> None:
     notifier.send(_format_boot_message(config, boot_state), parse_mode="HTML")
 
     while True:
+        _poll_telegram_commands(config, client, state_store, notifier)
         run_scan(config, client, state_store, notifier)
         if config.run_once:
             return
-        time.sleep(max(30, config.scan_interval_seconds))
+        _sleep_with_telegram_polling(config, client, state_store, notifier, max(30, config.scan_interval_seconds))
