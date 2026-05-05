@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -13,13 +14,25 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return bool(self.token and self.chat_id)
 
-    def send(self, message: str) -> None:
+    def send(self, message: str, parse_mode: str | None = None) -> None:
         if not self.enabled:
             return
-        params = urlencode({"chat_id": self.chat_id, "text": message[:3900]})
+        payload = {"chat_id": self.chat_id, "text": message[:3900]}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        params = urlencode(payload)
         url = f"https://api.telegram.org/bot{self.token}/sendMessage?{params}"
         try:
             with urlopen(url, timeout=10):
                 return
         except OSError:
-            return
+            if not parse_mode:
+                return
+            plain_text = re.sub(r"<[^>]+>", "", message)
+            params = urlencode({"chat_id": self.chat_id, "text": plain_text[:3900]})
+            url = f"https://api.telegram.org/bot{self.token}/sendMessage?{params}"
+            try:
+                with urlopen(url, timeout=10):
+                    return
+            except OSError:
+                return

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from bondsbot.config import BondsConfig
 from bondsbot.models import RatesSignal
-from bondsbot.runtime import _execute_live_orders, _format_scan_message, _should_send_heartbeat
+from bondsbot.runtime import _execute_live_orders, _format_scan_message, _send_trade_lifecycle_alerts, _should_send_heartbeat
 
 
 class FakeOandaClient:
@@ -22,7 +22,15 @@ class FakeOandaClient:
 
     def place_market_order(self, instrument: str, units: float, tag: str, *, stop_loss: float | None = None, take_profit: float | None = None) -> dict[str, object]:
         self.orders.append({"instrument": instrument, "units": units, "tag": tag, "stop_loss": stop_loss, "take_profit": take_profit})
-        return {"orderFillTransaction": {"id": "order-1"}}
+        return {"orderFillTransaction": {"id": "fill-1", "price": "95.875", "tradeOpened": {"tradeID": "trade-1"}}}
+
+
+class FakeNotifier:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str | None]] = []
+
+    def send(self, message: str, parse_mode: str | None = None) -> None:
+        self.messages.append((message, parse_mode))
 
 
 def _live_config() -> BondsConfig:
@@ -108,7 +116,68 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertLess(client.orders[0]["units"], 0)
         self.assertEqual(client.orders[0]["stop_loss"], 97.0)
         self.assertEqual(client.orders[0]["take_profit"], 94.0)
-        self.assertEqual(state["open_positions"][0]["order_id"], "order-1")
+        self.assertEqual(state["open_positions"][0]["order_id"], "trade-1")
+        self.assertEqual(state["open_positions"][0]["entry_price"], 95.875)
+
+    def test_live_order_alert_matches_forex_lifecycle_style(self) -> None:
+        config = _live_config()
+        signal = _oanda_signal()
+        state: dict[str, object] = {}
+        client = FakeOandaClient()
+        notifier = FakeNotifier()
+
+        orders, errors = _execute_live_orders([signal], config, client, state, 10000.0, False)
+        _send_trade_lifecycle_alerts(notifier, orders, [])
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(notifier.messages), 1)
+        message, parse_mode = notifier.messages[0]
+        self.assertEqual(parse_mode, "HTML")
+        self.assertIn("<b>Duration Trend SHORT</b> | US10Y", message)
+        self.assertIn("Entry: 95.87500", message)
+        self.assertIn("TP: 94.00000", message)
+        self.assertIn("SL: 97.00000", message)
+        self.assertIn("DV01", message)
+        self.assertIn("Order: trade-1", message)
+
+    def test_closed_oanda_position_generates_broker_close_alert(self) -> None:
+        config = _live_config()
+        state: dict[str, object] = {
+            "open_positions": [
+                {
+                    "canonical": "US10Y",
+                    "instrument": "USB10Y_USD",
+                    "side": "SHORT",
+                    "strategy": "DURATION_TREND",
+                    "units": 8.0,
+                    "entry_price": 96.0,
+                    "entry_yield_bps": 395.0,
+                    "dv01": 0.25,
+                    "stop_price": 97.0,
+                    "take_profit_price": 94.0,
+                    "opened_at": "2026-05-04T17:00:00+00:00",
+                    "country": "US",
+                    "tenor_bucket": "10Y",
+                    "order_id": "trade-1",
+                    "metadata": {},
+                }
+            ]
+        }
+        client = FakeOandaClient()
+        notifier = FakeNotifier()
+
+        orders, errors = _execute_live_orders([], config, client, state, 10000.0, False)
+        _send_trade_lifecycle_alerts(notifier, orders, state["last_closed_positions"])
+
+        self.assertEqual(orders, [])
+        self.assertEqual(errors, [])
+        self.assertEqual(state["open_positions"], [])
+        self.assertEqual(len(notifier.messages), 1)
+        message, parse_mode = notifier.messages[0]
+        self.assertEqual(parse_mode, "HTML")
+        self.assertIn("<b>Duration Trend Closed at broker</b> | US10Y", message)
+        self.assertIn("Exit: broker reported closed", message)
+        self.assertIn("Reason: OANDA position no longer open", message)
 
     def test_live_config_skips_order_when_oanda_market_is_not_tradeable(self) -> None:
         config = _live_config()
