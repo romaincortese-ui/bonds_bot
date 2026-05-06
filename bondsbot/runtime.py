@@ -9,7 +9,7 @@ from bondsbot.backtest.data import FixtureRatesDataProvider
 from bondsbot.config import BondsConfig
 from bondsbot.models import RatesPosition, RatesSignal
 from bondsbot.oanda_client import OandaClient
-from bondsbot.risk import can_open, country_dv01, max_country_dv01, max_portfolio_dv01, max_tenor_dv01, position_from_signal, tenor_dv01
+from bondsbot.risk import can_open, country_dv01, dv01_per_unit, max_country_dv01, max_portfolio_dv01, max_tenor_dv01, position_from_signal, tenor_dv01
 from bondsbot.state import StateStore
 from bondsbot.strategies import generate_signal
 from bondsbot.telegram import TelegramNotifier
@@ -156,6 +156,47 @@ def _fill_price(response: dict[str, object]) -> float | None:
     if not isinstance(fill, dict):
         return None
     return _float_or_none(fill.get("price"))
+
+
+def _order_cancel_reason(response: dict[str, object]) -> str:
+    cancel = response.get("orderCancelTransaction")
+    if isinstance(cancel, dict):
+        return str(cancel.get("reason") or cancel.get("rejectReason") or "order_not_filled")
+    reject = response.get("orderRejectTransaction")
+    if isinstance(reject, dict):
+        return str(reject.get("rejectReason") or reject.get("reason") or "order_rejected")
+    return "order_not_filled"
+
+
+def _recenter_brackets(position: RatesPosition, signal: RatesSignal, bid: float, ask: float) -> None:
+    stop_distance = max(abs(signal.entry_price - signal.stop_price), signal.entry_price * 0.0018)
+    target_distance = max(abs(signal.take_profit_price - signal.entry_price), stop_distance)
+    if signal.side == "LONG":
+        position.entry_price = ask
+        position.stop_price = max(0.00001, ask - stop_distance)
+        position.take_profit_price = ask + target_distance
+    else:
+        position.entry_price = bid
+        position.stop_price = bid + stop_distance
+        position.take_profit_price = max(0.00001, bid - target_distance)
+
+
+def _apply_minimum_live_units(position: RatesPosition, signal: RatesSignal, equity: float, config: BondsConfig) -> tuple[bool, str | None]:
+    min_units = max(0, int(config.min_live_order_units))
+    if min_units <= 0 or position.units >= min_units:
+        return True, None
+    if signal.score < config.min_live_unit_score:
+        return False, "position_size_below_one_oanda_unit"
+    unit_dv01 = dv01_per_unit(signal.canonical, position.entry_price, config)
+    floor_dv01 = unit_dv01 * min_units
+    nav_10bp = floor_dv01 * 10.0 / max(equity, 0.0001)
+    if nav_10bp > config.max_min_unit_nav_10bp:
+        return False, f"min_unit_nav_10bp_{nav_10bp:.4f}_above_{config.max_min_unit_nav_10bp:.4f}"
+    position.units = float(min_units)
+    position.dv01 = floor_dv01
+    position.metadata["min_unit_floor_applied"] = True
+    position.metadata["min_unit_nav_10bp"] = round(nav_10bp, 4)
+    return True, None
 
 
 def _json_safe(value: object) -> object:
@@ -340,6 +381,16 @@ def _execute_live_orders(signals: list[RatesSignal], config: BondsConfig, client
         position = position_from_signal(signal, equity, positions, config)
         if position.units <= 0 or position.dv01 <= 0:
             continue
+        try:
+            bid, ask = client.current_bid_ask(instrument)
+        except RuntimeError as exc:
+            errors.append({"canonical": signal.canonical, "instrument": instrument, "stage": "pricing", "error": str(exc)})
+            continue
+        _recenter_brackets(position, signal, bid, ask)
+        sized, size_reason = _apply_minimum_live_units(position, signal, equity, config)
+        if not sized:
+            errors.append({"canonical": signal.canonical, "stage": "units", "reason": size_reason or "position_size_below_one_oanda_unit"})
+            continue
         signed_units = _signed_oanda_units(position.units, signal.side)
         if signed_units == 0:
             errors.append({"canonical": signal.canonical, "stage": "units", "reason": "position_size_below_one_oanda_unit"})
@@ -354,6 +405,9 @@ def _execute_live_orders(signals: list[RatesSignal], config: BondsConfig, client
             )
         except RuntimeError as exc:
             errors.append({"canonical": signal.canonical, "instrument": instrument, "stage": "order", "error": str(exc)})
+            continue
+        if not isinstance(response.get("orderFillTransaction"), dict):
+            errors.append({"canonical": signal.canonical, "instrument": instrument, "stage": "order", "reason": _order_cancel_reason(response)})
             continue
         fill_price = _fill_price(response)
         if fill_price is not None:

@@ -120,6 +120,9 @@ class BondsConfig:
     max_portfolio_dv01_nav_10bp: float
     max_country_dv01_nav_10bp: float
     max_tenor_dv01_nav_10bp: float
+    min_live_order_units: int
+    min_live_unit_score: float
+    max_min_unit_nav_10bp: float
     daily_loss_halt_pct: float
     rolling_dd_throttle_pct: float
     rolling_dd_halt_pct: float
@@ -154,6 +157,9 @@ class BondsConfig:
             max_portfolio_dv01_nav_10bp=_float("MAX_PORTFOLIO_DV01_NAV_10BP", 0.0025),
             max_country_dv01_nav_10bp=_float("MAX_COUNTRY_DV01_NAV_10BP", 0.0015),
             max_tenor_dv01_nav_10bp=_float("MAX_TENOR_DV01_NAV_10BP", 0.0010),
+            min_live_order_units=_int("BONDS_MIN_LIVE_ORDER_UNITS", 1),
+            min_live_unit_score=_float("BONDS_MIN_LIVE_UNIT_SCORE", 80.0),
+            max_min_unit_nav_10bp=_float("BONDS_MAX_MIN_UNIT_NAV_10BP", 0.0250),
             daily_loss_halt_pct=_float("DAILY_LOSS_HALT_PCT", 0.010),
             rolling_dd_throttle_pct=_float("ROLLING_DD_THROTTLE_PCT", 0.040),
             rolling_dd_halt_pct=_float("ROLLING_DD_HALT_PCT", 0.070),

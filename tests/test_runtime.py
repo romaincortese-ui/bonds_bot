@@ -14,6 +14,9 @@ class FakeOandaClient:
         self.orders: list[dict[str, object]] = []
         self.tradeable = True
         self.open_position_symbols: set[str] = set()
+        self.bid = 96.0
+        self.ask = 96.01
+        self.order_response: dict[str, object] = {"orderFillTransaction": {"id": "fill-1", "price": "95.875", "tradeOpened": {"tradeID": "trade-1"}}}
 
     def account_nav(self) -> float:
         return 10000.0
@@ -24,9 +27,12 @@ class FakeOandaClient:
     def instrument_tradeable(self, instrument: str) -> tuple[bool, str]:
         return self.tradeable, "tradeable" if self.tradeable else "pricing_status_non_tradeable"
 
+    def current_bid_ask(self, instrument: str) -> tuple[float, float]:
+        return self.bid, self.ask
+
     def place_market_order(self, instrument: str, units: float, tag: str, *, stop_loss: float | None = None, take_profit: float | None = None) -> dict[str, object]:
         self.orders.append({"instrument": instrument, "units": units, "tag": tag, "stop_loss": stop_loss, "take_profit": take_profit})
-        return {"orderFillTransaction": {"id": "fill-1", "price": "95.875", "tradeOpened": {"tradeID": "trade-1"}}}
+        return self.order_response
 
 
 class FakeNotifier:
@@ -228,6 +234,74 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertEqual(client.orders[0]["take_profit"], 94.0)
         self.assertEqual(state["open_positions"][0]["order_id"], "trade-1")
         self.assertEqual(state["open_positions"][0]["entry_price"], 95.875)
+
+    def test_live_config_applies_one_unit_floor_for_small_nav_high_score(self) -> None:
+        config = _live_config()
+        signal = _oanda_signal()
+        state: dict[str, object] = {}
+        client = FakeOandaClient()
+
+        orders, errors = _execute_live_orders([signal], config, client, state, 50.0, False)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(client.orders[0]["units"], -1)
+        self.assertEqual(state["open_positions"][0]["units"], 1.0)
+        self.assertTrue(state["open_positions"][0]["metadata"]["min_unit_floor_applied"])
+
+    def test_live_config_skips_min_unit_floor_when_too_risky(self) -> None:
+        config = _live_config()
+        signal = replace(
+            _oanda_signal(),
+            canonical="US30Y",
+            score=88.0,
+            entry_price=112.0,
+            stop_price=114.0,
+            take_profit_price=108.0,
+            country="US",
+            tenor_bucket="30Y",
+            metadata={"data_provider": "oanda", "oanda_instrument": "USB30Y_USD", "time": datetime(2026, 5, 4, tzinfo=timezone.utc)},
+        )
+        state: dict[str, object] = {}
+        client = FakeOandaClient()
+        client.bid = 112.0
+        client.ask = 112.01
+
+        orders, errors = _execute_live_orders([signal], config, client, state, 50.0, False)
+
+        self.assertEqual(orders, [])
+        self.assertEqual(client.orders, [])
+        self.assertEqual(errors[0]["stage"], "units")
+        self.assertIn("above_0.0250", str(errors[0]["reason"]))
+
+    def test_live_config_requires_oanda_fill_before_recording_order(self) -> None:
+        config = _live_config()
+        signal = _oanda_signal()
+        state: dict[str, object] = {}
+        client = FakeOandaClient()
+        client.order_response = {"orderCancelTransaction": {"id": "cancel-1", "reason": "STOP_LOSS_ON_FILL_LOSS"}}
+
+        orders, errors = _execute_live_orders([signal], config, client, state, 10000.0, False)
+
+        self.assertEqual(orders, [])
+        self.assertEqual(state["open_positions"], [])
+        self.assertEqual(errors[0]["stage"], "order")
+        self.assertEqual(errors[0]["reason"], "STOP_LOSS_ON_FILL_LOSS")
+
+    def test_live_config_recenters_brackets_on_current_quote(self) -> None:
+        config = _live_config()
+        signal = _oanda_signal()
+        state: dict[str, object] = {}
+        client = FakeOandaClient()
+        client.bid = 95.0
+        client.ask = 95.01
+
+        orders, errors = _execute_live_orders([signal], config, client, state, 10000.0, False)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(client.orders[0]["stop_loss"], 96.0)
+        self.assertEqual(client.orders[0]["take_profit"], 93.0)
 
     def test_live_order_alert_matches_forex_lifecycle_style(self) -> None:
         config = _live_config()

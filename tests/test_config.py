@@ -18,6 +18,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.universe, DEFAULT_UNIVERSE)
         self.assertEqual(config.scan_interval_seconds, 300)
         self.assertEqual(config.heartbeat_seconds, 3600)
+        self.assertEqual(config.min_live_order_units, 1)
+        self.assertEqual(config.min_live_unit_score, 80.0)
+        self.assertEqual(config.max_min_unit_nav_10bp, 0.0250)
 
     def test_list_variables_accept_commas_or_whitespace(self) -> None:
         env = {"BONDS_UNIVERSE": "US2Y US5Y,US10Y", "BONDS_STRATEGIES": "DURATION_TREND CARRY_ROLLDOWN"}
