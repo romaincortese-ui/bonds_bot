@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from bondsbot.config import BASE_PRICES, BASE_YIELDS_BPS, BondsConfig
 from bondsbot.models import RateCandle
+from bondsbot.oanda_client import OandaClient
 
 
 class FixtureRatesDataProvider:
@@ -13,6 +14,53 @@ class FixtureRatesDataProvider:
 
     def history(self, canonical: str) -> list[RateCandle]:
         return _generate(canonical.upper(), self.days)
+
+
+class OandaRatesBacktestDataProvider:
+    def __init__(self, config: BondsConfig, days: int = 120) -> None:
+        self.config = config
+        self.days = days
+        self.client = OandaClient(config)
+        self.fixture = FixtureRatesDataProvider(days=days)
+        self.provider_by_canonical: dict[str, str] = {}
+        self.failures: list[str] = []
+        self._tradeable: set[str] | None = None
+
+    def history(self, canonical: str) -> list[RateCandle]:
+        canonical = canonical.upper()
+        instrument = self._instrument_for(canonical)
+        if instrument and self.config.has_oanda_credentials:
+            try:
+                candles = self.client.candles(instrument, count=self.days, granularity="D")
+                if len(candles) >= 45:
+                    self.provider_by_canonical[canonical] = f"oanda:{instrument}"
+                    return candles
+                self.failures.append(f"{canonical}:too_few_oanda_candles")
+            except RuntimeError as exc:
+                self.failures.append(f"{canonical}:{str(exc)[:120]}")
+        self.provider_by_canonical[canonical] = "fixture"
+        return self.fixture.history(canonical)
+
+    def _instrument_for(self, canonical: str) -> str:
+        if not self.config.has_oanda_credentials:
+            return ""
+        if self._tradeable is None:
+            try:
+                self._tradeable = set(self.client.tradeable_instruments())
+            except RuntimeError as exc:
+                self.failures.append(f"instruments:{str(exc)[:120]}")
+                self._tradeable = set()
+        return self.config.oanda_instrument_for(canonical, self._tradeable)
+
+    @property
+    def provider_counts(self) -> dict[str, int]:
+        counts = {"oanda": 0, "fixture": 0}
+        for provider in self.provider_by_canonical.values():
+            if provider.startswith("oanda:"):
+                counts["oanda"] += 1
+            else:
+                counts["fixture"] += 1
+        return counts
 
 
 def _daily_drift(canonical: str, index: int) -> float:

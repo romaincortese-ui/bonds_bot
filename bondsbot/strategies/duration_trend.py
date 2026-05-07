@@ -28,6 +28,28 @@ def duration_trend_signal(canonical: str, candles: list[RateCandle], config: Bon
         score -= 4.0
     if score < 72.0:
         return None
+    price_only_broker_candles = candles[-1].yield_bps is None
+    if price_only_broker_candles:
+        if canonical not in {"US5Y", "US10Y"} or score < 78.0:
+            return None
+        fade_side = "LONG" if side == "SHORT" else "SHORT"
+        return signal_from_price_move(
+            canonical=canonical,
+            candles=candles,
+            config=config,
+            side=fade_side,
+            score=score,
+            strategy="BROKER_DURATION_FADE",
+            stop_multiple=1.10,
+            target_multiple=1.70,
+            expected_hold_bars=15,
+            metadata={
+                "price_momentum_20": round(price_momentum, 5),
+                "yield_slope_12_bps": round(yield_slope, 4),
+                "original_duration_side": side,
+                "broker_price_only": True,
+            },
+        )
     return signal_from_price_move(
         canonical=canonical,
         candles=candles,
