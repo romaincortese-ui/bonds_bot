@@ -57,6 +57,55 @@ def _format_amount(value: object, digits: int = 2) -> str:
     return f"{amount:.{digits}f}"
 
 
+def _format_money(value: object) -> str:
+    amount = _float_or_none(value)
+    if amount is None:
+        return "n/a"
+    sign = "-" if amount < 0 else ""
+    return f"{sign}£{abs(amount):.2f}"
+
+
+def _format_signed_percent(value: object) -> str:
+    amount = _float_or_none(value)
+    if amount is None:
+        return "n/a"
+    sign = "+" if amount >= 0 else ""
+    return f"{sign}{amount:.2f}%"
+
+
+def _position_entry_budget(row: dict[str, object]) -> float | None:
+    for key in ("entry_budget", "initial_margin_required", "margin_used"):
+        value = _float_or_none(row.get(key))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _position_unrealized_pl(row: dict[str, object]) -> float | None:
+    for key in ("unrealized_pl", "unrealizedPL"):
+        value = _float_or_none(row.get(key))
+        if value is not None:
+            return value
+    entry_budget = _position_entry_budget(row)
+    current_value = _float_or_none(row.get("current_value"))
+    if entry_budget is not None and current_value is not None:
+        return current_value - entry_budget
+    if entry_budget is not None:
+        return 0.0
+    return None
+
+
+def _position_current_value(row: dict[str, object]) -> float | None:
+    current_value = _float_or_none(row.get("current_value"))
+    if current_value is not None:
+        return current_value
+    entry_budget = _position_entry_budget(row)
+    unrealized_pl = _position_unrealized_pl(row)
+    if entry_budget is not None and unrealized_pl is not None:
+        return entry_budget + unrealized_pl
+    return None
+
+
 def _held_minutes(row: dict[str, object], closed_at: datetime | None = None) -> float:
     opened_at = _coerce_time(row.get("opened_at"))
     closed_time = closed_at or datetime.now(timezone.utc)
@@ -300,6 +349,15 @@ def _row_from_oanda_trade(config: BondsConfig, trade: dict[str, object], existin
     dv01 = _float_or_none(existing.get("dv01"))
     if dv01 is None:
         dv01 = units * dv01_per_unit(canonical, entry_price, config)
+    initial_margin_required = _float_or_none(trade.get("initialMarginRequired"))
+    margin_used = _float_or_none(trade.get("marginUsed"))
+    entry_budget = initial_margin_required
+    if entry_budget is None or entry_budget <= 0:
+        entry_budget = _float_or_none(existing.get("entry_budget")) or margin_used
+    unrealized_pl = _float_or_none(trade.get("unrealizedPL"))
+    if unrealized_pl is None:
+        unrealized_pl = _float_or_none(existing.get("unrealized_pl"))
+    current_value = entry_budget + unrealized_pl if entry_budget is not None and unrealized_pl is not None else _float_or_none(existing.get("current_value"))
     metadata = dict(existing.get("metadata") or {}) if isinstance(existing.get("metadata"), dict) else {}
     metadata["reconciled_from_oanda"] = True
     client_extensions = trade.get("clientExtensions")
@@ -318,6 +376,11 @@ def _row_from_oanda_trade(config: BondsConfig, trade: dict[str, object], existin
         "dv01": dv01 or 0.0,
         "stop_price": stop_price,
         "take_profit_price": take_profit_price,
+        "entry_budget": entry_budget,
+        "initial_margin_required": initial_margin_required,
+        "margin_used": margin_used,
+        "unrealized_pl": unrealized_pl,
+        "current_value": current_value,
         "opened_at": _coerce_time(trade.get("openTime")).isoformat(),
         "country": config.country_for(canonical),
         "tenor_bucket": config.tenor_bucket_for(canonical),
@@ -329,12 +392,16 @@ def _row_from_oanda_trade(config: BondsConfig, trade: dict[str, object], existin
 def _format_position_lines(row: dict[str, object]) -> list[str]:
     side = str(row.get("side") or "?").upper()
     side_icon = "🟢" if side == "LONG" else "🔴"
+    entry_budget = _position_entry_budget(row)
+    unrealized_pl = _position_unrealized_pl(row)
+    pnl_pct = (unrealized_pl / entry_budget * 100.0) if entry_budget and unrealized_pl is not None else None
+    current_value = _position_current_value(row)
     return [
         (
-            f"{side_icon} {_html(row.get('canonical') or '?')} {side} | {_html(row.get('instrument') or '?')} | "
-            f"units {_format_amount(row.get('units'), 2)} | DV01 {_format_amount(row.get('dv01'), 4)} | entry {_format_price(row.get('entry_price'))}"
+            f"{side_icon} {_html(row.get('canonical') or '?')} {side} | "
+            f"Entry Budget: {_format_money(entry_budget)} | P&L: {_format_signed_percent(pnl_pct)} | "
+            f"Current value: {_format_money(current_value)}"
         ),
-        f"   TP {_format_price(row.get('take_profit_price'))} | SL {_format_price(row.get('stop_price'))} | opened {_format_time(row.get('opened_at') or '')}",
     ]
 
 
@@ -393,6 +460,7 @@ def _position_row(position: RatesPosition, instrument: str, signed_units: float)
         "dv01": position.dv01,
         "stop_price": position.stop_price,
         "take_profit_price": position.take_profit_price,
+        "unrealized_pl": 0.0,
         "opened_at": position.opened_at.isoformat(),
         "country": position.country,
         "tenor_bucket": position.tenor_bucket,
@@ -402,25 +470,10 @@ def _position_row(position: RatesPosition, instrument: str, signed_units: float)
 
 
 def _format_order_opened_message(row: dict[str, object]) -> str:
-    direction = str(row.get("side") or "?").upper()
-    dir_emoji = "🟢" if direction == "LONG" else "🔴"
-    strategy = _pretty_strategy(str(row.get("strategy") or "LIVE"))
-    canonical = _html(row.get("canonical") or "?")
-    instrument = _html(row.get("instrument") or "?")
-    units = _format_amount(row.get("units"), 2)
-    score = _format_amount(row.get("score"), 0)
-    dv01 = _format_amount(row.get("dv01"), 4)
     return "\n".join(
         [
-            f"✅ <b>TRADE OPENED: {_html(strategy)} {direction}</b> | {canonical} {dir_emoji}",
-            "━━━━━━━━━━━━━━━",
-            f"Instrument: {instrument}",
-            f"Entry: {_format_price(row.get('entry_price'))}",
-            f"TP: {_format_price(row.get('take_profit_price'))}",
-            f"SL: {_format_price(row.get('stop_price'))}",
-            f"Units: {units} | DV01: {dv01}",
-            f"Score: {score} | {_html(row.get('country') or '?')} {_html(row.get('tenor_bucket') or '?')}",
-            f"Order: {_html(row.get('order_id') or 'live')}",
+            "✅ <b>TRADE OPENED</b>",
+            _format_position_lines(row)[0],
         ]
     )
 
@@ -516,6 +569,13 @@ def _execute_live_orders(signals: list[RatesSignal], config: BondsConfig, client
             position.entry_price = fill_price
         position.order_id = _order_id(response)
         row = _position_row(position, instrument, signed_units)
+        try:
+            live_trade = next((trade for trade in client.open_trades() if str(trade.get("id") or "") == position.order_id), None)
+            enriched_row = _row_from_oanda_trade(config, live_trade, row) if live_trade else None
+            if enriched_row is not None:
+                row = enriched_row
+        except RuntimeError as exc:
+            errors.append({"canonical": signal.canonical, "instrument": instrument, "stage": "reconcile", "error": str(exc)})
         rows.append(row)
         positions.append(position)
         open_instruments.add(instrument)
@@ -531,6 +591,9 @@ def _execute_live_orders(signals: list[RatesSignal], config: BondsConfig, client
                 "entry_price": position.entry_price,
                 "stop_price": position.stop_price,
                 "take_profit_price": position.take_profit_price,
+                "entry_budget": row.get("entry_budget"),
+                "unrealized_pl": row.get("unrealized_pl"),
+                "current_value": row.get("current_value"),
                 "country": position.country,
                 "tenor_bucket": position.tenor_bucket,
                 "score": round(signal.score, 2),
@@ -612,7 +675,7 @@ def _format_scan_message(snapshot: dict[str, object], config: BondsConfig) -> st
         lines.append("✅ Opened this scan")
         for row in live_orders[:3]:
             if isinstance(row, dict):
-                lines.append(f"TRADE OPENED: {row.get('side', '?')} {row.get('canonical', '?')} | {row.get('instrument', '?')} | units {row.get('units', '?')} | DV01 {row.get('dv01', '?')}")
+                lines.append(f"TRADE OPENED: {_format_position_lines(row)[0]}")
 
     live_errors = snapshot.get("live_order_errors", [])
     if isinstance(live_errors, list) and live_errors:
