@@ -126,6 +126,9 @@ class BondsConfig:
     daily_loss_halt_pct: float
     rolling_dd_throttle_pct: float
     rolling_dd_halt_pct: float
+    profit_lock_enabled: bool
+    profit_lock_trigger_pct: float
+    profit_lock_pullback_pct: float
     cpi_fomc_block_minutes_before: int
     cpi_fomc_block_minutes_after: int
     min_oanda_rates_products: int
@@ -163,6 +166,9 @@ class BondsConfig:
             daily_loss_halt_pct=_float("DAILY_LOSS_HALT_PCT", 0.010),
             rolling_dd_throttle_pct=_float("ROLLING_DD_THROTTLE_PCT", 0.040),
             rolling_dd_halt_pct=_float("ROLLING_DD_HALT_PCT", 0.070),
+            profit_lock_enabled=_bool("PROFIT_LOCK_ENABLED", True),
+            profit_lock_trigger_pct=_float("PROFIT_LOCK_TRIGGER_PCT", 15.0),
+            profit_lock_pullback_pct=_float("PROFIT_LOCK_PULLBACK_PCT", 2.0),
             cpi_fomc_block_minutes_before=_int("CPI_FOMC_BLOCK_MINUTES_BEFORE", 30),
             cpi_fomc_block_minutes_after=_int("CPI_FOMC_BLOCK_MINUTES_AFTER", 10),
             min_oanda_rates_products=_int("MIN_OANDA_RATES_PRODUCTS", 4),
