@@ -17,7 +17,7 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.has_oanda_credentials)
         self.assertEqual(config.universe, DEFAULT_UNIVERSE)
         self.assertEqual(config.scan_interval_seconds, 300)
-        self.assertEqual(config.heartbeat_seconds, 3600)
+        self.assertEqual(config.heartbeat_seconds, 21600)
         self.assertEqual(config.min_live_order_units, 1)
         self.assertEqual(config.min_live_unit_score, 80.0)
         self.assertEqual(config.max_min_unit_nav_10bp, 0.0250)

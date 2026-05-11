@@ -153,7 +153,7 @@ class BondsConfig:
             universe=_csv("BONDS_UNIVERSE", DEFAULT_UNIVERSE),
             strategies=_csv("BONDS_STRATEGIES", DEFAULT_STRATEGIES),
             scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 300),
-            heartbeat_seconds=_int("BONDS_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", 3600)),
+            heartbeat_seconds=_int("BONDS_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", 21600)),
             run_once=_bool("RUN_ONCE", False),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
             max_live_orders_per_scan=_int("MAX_LIVE_ORDERS_PER_SCAN", 1),
