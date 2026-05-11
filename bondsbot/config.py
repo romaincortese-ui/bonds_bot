@@ -8,6 +8,7 @@ from pathlib import Path
 
 DEFAULT_UNIVERSE = ("US2Y", "US5Y", "US10Y", "US30Y", "DE10Y", "UK10Y")
 DEFAULT_STRATEGIES = ("DURATION_TREND", "CARRY_ROLLDOWN", "CURVE_SPREAD", "MACRO_EVENT", "AUCTION_RELIEF")
+MIN_HEARTBEAT_SECONDS = 21600
 
 COUNTRIES = {
     "US2Y": "US",
@@ -94,6 +95,11 @@ def _int(name: str, default: int) -> int:
     return int(raw)
 
 
+def _heartbeat_seconds() -> int:
+    configured = _int("BONDS_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", MIN_HEARTBEAT_SECONDS))
+    return max(MIN_HEARTBEAT_SECONDS, configured)
+
+
 def _csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw = os.environ.get(name)
     if not raw:
@@ -153,7 +159,7 @@ class BondsConfig:
             universe=_csv("BONDS_UNIVERSE", DEFAULT_UNIVERSE),
             strategies=_csv("BONDS_STRATEGIES", DEFAULT_STRATEGIES),
             scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 300),
-            heartbeat_seconds=_int("BONDS_HEARTBEAT_SECONDS", _int("HEARTBEAT_SECONDS", 21600)),
+            heartbeat_seconds=_heartbeat_seconds(),
             run_once=_bool("RUN_ONCE", False),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 4),
             max_live_orders_per_scan=_int("MAX_LIVE_ORDERS_PER_SCAN", 1),

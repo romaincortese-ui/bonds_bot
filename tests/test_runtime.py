@@ -186,10 +186,32 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertNotIn("🏆 Top Rates Signals", message)
         self.assertNotIn("Score 88.4", message)
 
+    def test_scan_message_with_no_positions_still_reports_summary(self) -> None:
+        config = BondsConfig.from_env()
+        snapshot = {
+            "time": "2026-05-11T14:58:00+00:00",
+            "data_provider_counts": {"oanda": 4, "fixture": 2},
+            "mapped_oanda_instruments": {"US10Y": "USB10Y_USD"},
+            "tradeable_instrument_count": 6,
+            "risk_caps": {"portfolio_dv01": 2.5, "country_dv01": 1.5, "tenor_dv01": 1.0},
+            "failures": [],
+            "available_balance": 9876.54,
+            "open_positions": [],
+            "top_signals": [{"canonical": "US10Y", "side": "SHORT", "score": 88.4}],
+        }
+
+        message = _format_scan_message(snapshot, config)
+
+        self.assertIn("📂 Open positions: 0 / 4", message)
+        self.assertIn("💷 Total P&L: +0.00% | +£0.00", message)
+        self.assertIn("💰 Available Balance: £9876.54", message)
+        self.assertNotIn("🏆 Top Rates Signals", message)
+        self.assertNotIn("US10Y | Score", message)
+
     def test_heartbeat_gate_limits_routine_telegram_messages(self) -> None:
-        self.assertTrue(_should_send_heartbeat({}, 1000.0, 3600))
-        self.assertFalse(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 1000.0, 3600))
-        self.assertTrue(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 4600.0, 3600))
+        self.assertTrue(_should_send_heartbeat({}, 1000.0, 21600))
+        self.assertFalse(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 1000.0, 21600))
+        self.assertTrue(_should_send_heartbeat({"last_telegram_heartbeat_at": 900.0}, 22500.0, 21600))
 
     def test_boot_message_confirms_activation(self) -> None:
         config = replace(
@@ -198,7 +220,7 @@ class RuntimeMessageTests(unittest.TestCase):
             live_trading_enabled=True,
             universe=("US10Y", "UK10Y"),
             scan_interval_seconds=300,
-            heartbeat_seconds=3600,
+            heartbeat_seconds=21600,
         )
         state = {"open_positions": [{"instrument": "USB10Y_USD"}]}
 
@@ -258,7 +280,8 @@ class RuntimeMessageTests(unittest.TestCase):
         self.assertEqual(parse_mode, "HTML")
         self.assertIn("<b>Bonds Status</b>", message)
         self.assertIn("Open positions: 1", message)
-        self.assertIn("Top signal: SHORT US10Y", message)
+        self.assertNotIn("Top signal", message)
+        self.assertNotIn("US10Y | Score", message)
 
     def test_status_command_ignores_other_chats(self) -> None:
         config = _live_config()

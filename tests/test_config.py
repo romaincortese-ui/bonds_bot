@@ -29,6 +29,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.universe, ("US2Y", "US5Y", "US10Y"))
         self.assertEqual(config.strategies, ("DURATION_TREND", "CARRY_ROLLDOWN"))
 
+    def test_heartbeat_env_is_clamped_to_six_hours(self) -> None:
+        with patch.dict(os.environ, {"BONDS_HEARTBEAT_SECONDS": "3600"}, clear=True):
+            config = BondsConfig.from_env()
+        self.assertEqual(config.heartbeat_seconds, 21600)
+        with patch.dict(os.environ, {"HEARTBEAT_SECONDS": "3600"}, clear=True):
+            config = BondsConfig.from_env()
+        self.assertEqual(config.heartbeat_seconds, 21600)
+
     def test_dv01_cap_uses_10bp_nav_loss(self) -> None:
         config = BondsConfig.from_env()
         self.assertAlmostEqual(max_portfolio_dv01(10000.0, config), 3.125)

@@ -870,15 +870,6 @@ def _format_status_message(config: BondsConfig, state: dict[str, Any], equity: f
         lines.append("📂 <b>Open positions</b>")
         for row in rows[:5]:
             lines.extend(_format_position_lines(row))
-    top_signals = snapshot.get("top_signals", [])
-    if isinstance(top_signals, list) and top_signals:
-        top = next((row for row in top_signals if isinstance(row, dict)), None)
-        if top:
-            lines.append("")
-            lines.append(
-                f"🏆 Top signal: {_html(top.get('side') or '?')} {_html(top.get('canonical') or '?')} | "
-                f"Score {_format_amount(top.get('score'), 1)} | {_html(top.get('data_provider') or '?')}"
-            )
     return "\n".join(lines)
 
 
