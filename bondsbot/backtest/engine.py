@@ -9,7 +9,7 @@ from pathlib import Path
 from bondsbot.config import BondsConfig
 from bondsbot.exits import evaluate_exit
 from bondsbot.models import BacktestResult, RatesPosition, Trade
-from bondsbot.risk import can_open, position_from_signal
+from bondsbot.risk import can_open, dv01_per_unit, position_from_signal
 from bondsbot.strategies import generate_signal
 
 
@@ -53,6 +53,8 @@ class BacktestEngine:
                 if not allowed:
                     continue
                 position = position_from_signal(signal, max(balance, 1.0), positions, self.config)
+                if not _apply_min_units_floor(position, signal, max(balance, 1.0), self.config):
+                    continue
                 if position.units > 0 and position.dv01 > 0:
                     positions.append(position)
                 if len(positions) >= self.config.max_open_positions:
@@ -73,6 +75,24 @@ class BacktestEngine:
 
 def _gross_pnl(position: RatesPosition, exit_price: float) -> float:
     return (exit_price - position.entry_price) * position.units * position.direction
+
+
+def _apply_min_units_floor(position: RatesPosition, signal, equity: float, config: BondsConfig) -> bool:
+    """Mirror runtime._apply_minimum_live_units so the backtest reflects live unit constraints."""
+    min_units = max(0, int(config.min_live_order_units))
+    if min_units <= 0 or position.units >= min_units:
+        return True
+    if signal.score < config.min_live_unit_score:
+        return False
+    unit_dv01 = dv01_per_unit(signal.canonical, position.entry_price, config)
+    floor_dv01 = unit_dv01 * min_units
+    nav_10bp = floor_dv01 * 10.0 / max(equity, 0.0001)
+    if nav_10bp > config.max_min_unit_nav_10bp:
+        return False
+    position.units = float(min_units)
+    position.dv01 = floor_dv01
+    position.metadata["min_unit_floor_applied"] = True
+    return True
 
 
 def _pnl(position: RatesPosition, exit_price: float) -> float:
