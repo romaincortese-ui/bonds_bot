@@ -145,6 +145,9 @@ class BondsConfig:
     fred_api_key: str
     telegram_token: str
     telegram_chat_id: str
+    redis_url: str
+    runtime_status_redis_key: str
+    runtime_status_ttl_seconds: int
 
     @classmethod
     def from_env(cls) -> "BondsConfig":
@@ -185,6 +188,9 @@ class BondsConfig:
             fred_api_key=os.environ.get("FRED_API_KEY", "").strip(),
             telegram_token=os.environ.get("TELEGRAM_TOKEN", "").strip(),
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
+            redis_url=os.environ.get("REDIS_URL", "").strip(),
+            runtime_status_redis_key=os.environ.get("BONDS_RUNTIME_STATUS_REDIS_KEY", "bonds_bot_runtime_status").strip(),
+            runtime_status_ttl_seconds=_int("BONDS_RUNTIME_STATUS_TTL_SECONDS", 1800),
         )
 
     @property
