@@ -39,7 +39,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_dv01_cap_uses_10bp_nav_loss(self) -> None:
         config = BondsConfig.from_env()
-        self.assertAlmostEqual(max_portfolio_dv01(10000.0, config), 3.125)
+        self.assertAlmostEqual(max_portfolio_dv01(10000.0, config), 5.0)
 
 
 if __name__ == "__main__":
