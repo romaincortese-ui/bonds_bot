@@ -35,6 +35,10 @@ class BacktestEngine:
             for position in list(positions):
                 candle = histories[position.canonical][index]
                 should_exit, exit_price, reason = evaluate_exit(position, candle)
+                profit_lock_exit = _evaluate_profit_lock(position, candle, self.config)
+                if profit_lock_exit is not None and (not should_exit or reason in {"yield_stop", "time_stop", "hold"}):
+                    should_exit = True
+                    exit_price, reason = profit_lock_exit
                 if should_exit:
                     pnl = _pnl(position, exit_price)
                     balance += pnl
@@ -121,6 +125,76 @@ def _trade_from_position(position: RatesPosition, exit_time, exit_price: float, 
         return_r=pnl / stop_risk,
         exit_reason=reason,
     )
+
+
+def _evaluate_profit_lock(position: RatesPosition, candle, config: BondsConfig) -> tuple[float, str] | None:
+    if not config.profit_lock_enabled:
+        return None
+    metadata = position.metadata if isinstance(position.metadata, dict) else {}
+    if metadata is not position.metadata:
+        position.metadata = metadata
+    armed_before = bool(metadata.get("profit_lock_armed"))
+    favorable_price = candle.high if position.direction > 0 else candle.low
+    peak_pct = _net_pnl_pct(position, favorable_price)
+    if peak_pct is None:
+        return None
+    previous_peak = _float_or_none(metadata.get("profit_lock_peak_pnl_pct"))
+    if previous_peak is None or peak_pct > previous_peak:
+        previous_peak = peak_pct
+        metadata["profit_lock_peak_pnl_pct"] = peak_pct
+        metadata["profit_lock_peak_price"] = favorable_price
+    trigger_pct = max(0.0, float(config.profit_lock_trigger_pct))
+    pullback_pct = max(0.0, float(config.profit_lock_pullback_pct))
+    if previous_peak < trigger_pct:
+        return None
+    floor_pct = max(0.0, previous_peak - pullback_pct)
+    metadata["profit_lock_armed"] = True
+    metadata["profit_lock_floor_pnl_pct"] = floor_pct
+    if not armed_before or floor_pct <= 0.0:
+        return None
+    exit_price = _price_for_net_pnl_pct(position, floor_pct)
+    if exit_price is None or exit_price <= 0:
+        return None
+    if position.direction > 0 and candle.low <= exit_price:
+        return exit_price, "peak_pullback_profit_lock"
+    if position.direction < 0 and candle.high >= exit_price:
+        return exit_price, "peak_pullback_profit_lock"
+    return None
+
+
+def _net_pnl_pct(position: RatesPosition, price: float) -> float | None:
+    budget = _profit_lock_budget(position)
+    if budget <= 0:
+        return None
+    return _pnl(position, price) / budget * 100.0
+
+
+def _profit_lock_budget(position: RatesPosition) -> float:
+    return max(abs(position.entry_price - position.stop_price) * position.units, 0.0001)
+
+
+def _price_for_net_pnl_pct(position: RatesPosition, pnl_pct: float) -> float | None:
+    units = abs(float(position.units))
+    if units <= 0:
+        return None
+    target_pnl = max(0.0, float(pnl_pct)) / 100.0 * _profit_lock_budget(position)
+    entry = float(position.entry_price)
+    if position.direction > 0:
+        denominator = 1.0 - FEE_RATE - SLIPPAGE_RATE
+        if denominator <= 0:
+            return None
+        return (target_pnl / units + entry * (1.0 + FEE_RATE)) / denominator
+    denominator = 1.0 + FEE_RATE + SLIPPAGE_RATE
+    return (entry * (1.0 - FEE_RATE) - target_pnl / units) / denominator
+
+
+def _float_or_none(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_result(initial_balance: float, final_balance: float, trades: list[Trade], equity_curve: list[float], data_provider: str) -> BacktestResult:
