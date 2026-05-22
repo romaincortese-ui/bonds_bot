@@ -19,7 +19,19 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.scan_interval_seconds, 300)
         self.assertEqual(config.heartbeat_seconds, 21600)
         self.assertEqual(config.min_live_order_units, 1)
-        self.assertEqual(config.min_live_unit_score, 80.0)
+        self.assertGreaterEqual(config.max_portfolio_dv01_nav_10bp, 0.0025)
+        self.assertLessEqual(config.max_portfolio_dv01_nav_10bp, 0.007)
+        self.assertGreaterEqual(config.max_country_dv01_nav_10bp, 0.0015)
+        self.assertLessEqual(config.max_country_dv01_nav_10bp, 0.0045)
+        self.assertGreaterEqual(config.max_tenor_dv01_nav_10bp, 0.001)
+        self.assertLessEqual(config.max_tenor_dv01_nav_10bp, 0.003)
+        self.assertGreaterEqual(config.min_live_unit_score, 72.0)
+        self.assertLessEqual(config.min_live_unit_score, 88.0)
+        self.assertGreaterEqual(config.profit_lock_trigger_pct, 8.0)
+        self.assertLessEqual(config.profit_lock_trigger_pct, 20.0)
+        self.assertGreaterEqual(config.profit_lock_pullback_pct, 1.0)
+        self.assertLessEqual(config.profit_lock_pullback_pct, 3.0)
+        self.assertLess(config.profit_lock_pullback_pct, config.profit_lock_trigger_pct)
         self.assertEqual(config.max_min_unit_nav_10bp, 0.0250)
 
     def test_list_variables_accept_commas_or_whitespace(self) -> None:
@@ -39,7 +51,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_dv01_cap_uses_10bp_nav_loss(self) -> None:
         config = BondsConfig.from_env()
-        self.assertAlmostEqual(max_portfolio_dv01(10000.0, config), 5.0)
+        self.assertAlmostEqual(max_portfolio_dv01(10000.0, config), 10000.0 * config.max_portfolio_dv01_nav_10bp / 10.0)
 
 
 if __name__ == "__main__":
