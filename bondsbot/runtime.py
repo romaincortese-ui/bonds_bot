@@ -115,6 +115,15 @@ def _position_pnl_pct(row: dict[str, object]) -> float | None:
     return unrealized_pl / entry_budget * 100.0
 
 
+def _position_stop_risk(row: dict[str, object]) -> float | None:
+    entry_price = _float_or_none(row.get("entry_price"))
+    stop_price = _float_or_none(row.get("stop_price"))
+    units = _float_or_none(row.get("units"))
+    if entry_price is None or stop_price is None or units is None or units <= 0:
+        return None
+    return abs(entry_price - stop_price) * units
+
+
 def _session_pnl(rows: list[object]) -> tuple[float, float]:
     total_entry_budget = 0.0
     total_pnl = 0.0
@@ -508,13 +517,14 @@ def _format_position_lines(row: dict[str, object]) -> list[str]:
     side = str(row.get("side") or "?").upper()
     side_icon = "🟢" if side == "LONG" else "🔴"
     entry_budget = _position_entry_budget(row)
+    unrealized_pl = _position_unrealized_pl(row)
     pnl_pct = _position_pnl_pct(row)
-    current_value = _position_current_value(row)
+    stop_risk = _position_stop_risk(row)
     return [
         (
             f"{side_icon} {_html(row.get('canonical') or '?')} {side} | "
-            f"Entry Budget: {_format_money(entry_budget)} | P&L: {_format_signed_percent(pnl_pct)} | "
-            f"Current value: {_format_money(current_value)}"
+            f"Margin: {_format_money(entry_budget)} | P&L: {_format_signed_money(unrealized_pl)} ({_format_signed_percent(pnl_pct)} of margin) | "
+            f"Stop: {_format_price(row.get('stop_price'))} | Risk@Stop: {_format_money(stop_risk)}"
         ),
     ]
 
@@ -673,12 +683,19 @@ def _format_broker_close_message(row: dict[str, object]) -> str:
     dir_arrow = "⬆️" if direction == "LONG" else "⬇️"
     strategy = _pretty_strategy(str(row.get("strategy") or "LIVE"))
     held_min = _held_minutes(row)
+    unrealized_pl = _position_unrealized_pl(row)
+    pnl_pct = _position_pnl_pct(row)
+    if unrealized_pl is None:
+        pnl_text = "unavailable from open-position sync"
+    else:
+        pnl_text = f"{_format_signed_money(unrealized_pl)} ({_format_signed_percent(pnl_pct)} of margin)"
     return "\n".join(
         [
             f"🔄 <b>{_html(strategy)} Closed at broker</b> | {_html(row.get('canonical') or '?')} {dir_arrow}",
             f"Instrument: {_html(row.get('instrument') or '?')}",
             f"Entry: {_format_price(row.get('entry_price'))} → Exit: broker reported closed",
-            "P&L: unavailable from open-position sync",
+            f"Last-known P&L: {pnl_text}",
+            f"Margin: {_format_money(_position_entry_budget(row))} | Risk@Stop: {_format_money(_position_stop_risk(row))}",
             f"Reason: OANDA position no longer open | Held: {held_min:.0f}min",
         ]
     )
