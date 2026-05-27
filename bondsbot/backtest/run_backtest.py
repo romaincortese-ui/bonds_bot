@@ -27,6 +27,10 @@ def main() -> int:
     print(f"pnl={result.total_pnl:.2f} return={result.return_pct:.2%} pf={result.profit_factor:.2f} max_dd={result.max_drawdown_pct:.2%}")
     print(f"by_country={by_country}")
     print(f"by_strategy={by_strategy}")
+    if result.total_pnl <= 0:
+        print(f"validation=failed reason=non_positive_pnl pnl={result.total_pnl:.2f}")
+        return 1
+    print("validation=passed reason=positive_pnl")
     return 0
 
 
