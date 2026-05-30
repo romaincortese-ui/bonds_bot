@@ -242,6 +242,35 @@ def _execution_label(config: BondsConfig, research_only: bool) -> str:
     return "signals only"
 
 
+def _prediction_overlay_status_line(config: BondsConfig) -> str:
+    if not config.prediction_overlay_enabled:
+        return "Prediction overlay: disabled"
+    state_file = str(config.prediction_overlay_state_file or "").strip()
+    source = "state file configured" if state_file else "state file missing"
+    return f"Prediction overlay: enabled | {source} | fallback {config.prediction_overlay_fallback_mode}"
+
+
+def _prediction_overlay_impact_line(row: dict[str, object]) -> str:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    if not metadata.get("prediction_overlay"):
+        return "Prediction overlay: no impact"
+    reason = _html(metadata.get("prediction_reason") or "applied")
+    event = str(metadata.get("prediction_event_title") or metadata.get("prediction_event_id") or "").strip()
+    probability = _float_or_none(metadata.get("prediction_favourable_probability"))
+    posterior = _float_or_none(metadata.get("prediction_bayesian_success_probability"))
+    size_multiplier = _float_or_none(metadata.get("prediction_size_multiplier"))
+    parts = [f"Prediction overlay: impacted | {reason}"]
+    if probability is not None:
+        parts.append(f"p {probability * 100.0:.0f}%")
+    if posterior is not None:
+        parts.append(f"posterior {posterior * 100.0:.0f}%")
+    if size_multiplier is not None:
+        parts.append(f"size {size_multiplier:.2f}x")
+    if event:
+        parts.append(f"event {_html(event[:80])}")
+    return " | ".join(parts)
+
+
 def _format_boot_message(config: BondsConfig, state: dict[str, Any], started_at: datetime | None = None) -> str:
     mode_icon = "🔴" if not config.paper_trade else "🧪"
     mode_text = "LIVE config" if not config.paper_trade else "PAPER"
@@ -675,6 +704,7 @@ def _format_order_opened_message(row: dict[str, object]) -> str:
         [
             "✅ <b>TRADE OPENED</b>",
             _format_position_lines(row)[0],
+            _prediction_overlay_impact_line(row),
         ]
     )
 
@@ -818,6 +848,7 @@ def _execute_live_orders(signals: list[RatesSignal], config: BondsConfig, client
                 "country": position.country,
                 "tenor_bucket": position.tenor_bucket,
                 "score": round(signal.score, 2),
+                "metadata": _json_safe(signal.metadata),
             }
         )
     state["open_positions"] = rows
@@ -865,6 +896,7 @@ def _format_scan_message(snapshot: dict[str, object], config: BondsConfig) -> st
         f"📂 Open positions: {len(open_positions)} / {config.max_open_positions}",
         f"💷 Total P&L: {_format_signed_percent(session_pnl_pct)} | {_format_signed_money(session_pnl_amount)}",
         f"💰 Available Balance: {_format_money(snapshot.get('available_balance'))}",
+        _prediction_overlay_status_line(config),
     ]
     for row in open_positions[:4]:
         if isinstance(row, dict):
@@ -883,6 +915,7 @@ def _format_scan_message(snapshot: dict[str, object], config: BondsConfig) -> st
         for row in live_orders[:3]:
             if isinstance(row, dict):
                 lines.append(f"TRADE OPENED: {_format_position_lines(row)[0]}")
+                lines.append(f"   ↳ {_prediction_overlay_impact_line(row)}")
 
     profit_updates = snapshot.get("profit_protection_updates", [])
     if isinstance(profit_updates, list) and profit_updates:
@@ -956,6 +989,7 @@ def _format_status_message(config: BondsConfig, state: dict[str, Any], equity: f
         f"Data: OANDA {oanda_count}/{total_count} | Fixture {fixture_count}/{total_count}",
         f"Mapped: {len(snapshot.get('mapped_oanda_instruments', {})) if isinstance(snapshot.get('mapped_oanda_instruments', {}), dict) else 0}/{total_count} | Tradeable {snapshot.get('tradeable_instrument_count', 0)}",
         f"DV01 caps: portfolio {_format_amount(risk_caps.get('portfolio_dv01'), 4)} | country {_format_amount(risk_caps.get('country_dv01'), 4)} | tenor {_format_amount(risk_caps.get('tenor_dv01'), 4)}",
+        _prediction_overlay_status_line(config),
         f"OANDA fetch issues: {failure_count} | Live order issues: {live_error_count} | Sync issues: {len(sync_errors)}",
         f"Telegram: commands online",
     ]
@@ -1176,6 +1210,7 @@ def run_scan(config: BondsConfig, client: OandaClient, state_store: StateStore, 
         "available_balance": round(available_balance, 2),
         "allocated_balance": round(_allocated_balance(open_positions), 2),
         "closed_positions": state.get("last_closed_positions", []),
+        "prediction_overlay_status": _prediction_overlay_status_line(config),
         "risk_caps": {
             "portfolio_dv01": round(max_portfolio_dv01(equity, config), 4),
             "country_dv01": round(max_country_dv01(equity, config), 4),
