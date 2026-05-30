@@ -5,10 +5,12 @@ import json
 from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from bondsbot.config import BondsConfig
 from bondsbot.exits import evaluate_exit
 from bondsbot.models import BacktestResult, RatesPosition, Trade
+from bondsbot.prediction_overlay import apply_prediction_overlay, load_prediction_state_payload, prediction_size_multiplier, select_point_in_time_prediction_state
 from bondsbot.risk import can_open, dv01_per_unit, position_from_signal
 from bondsbot.strategies import generate_signal
 
@@ -21,6 +23,36 @@ class BacktestEngine:
     def __init__(self, config: BondsConfig, provider) -> None:
         self.config = config
         self.provider = provider
+        self._prediction_overlay_replay_loaded = False
+        self._prediction_overlay_replay_payload: Any | None = None
+
+    def _load_prediction_overlay_replay(self) -> Any | None:
+        if self._prediction_overlay_replay_loaded:
+            return self._prediction_overlay_replay_payload
+        self._prediction_overlay_replay_loaded = True
+        self._prediction_overlay_replay_payload = load_prediction_state_payload(self.config.prediction_overlay_state_file)
+        return self._prediction_overlay_replay_payload
+
+    def _prediction_overlay_state_for(self, now) -> dict[str, Any] | None:
+        if not self.config.prediction_overlay_enabled:
+            return None
+        return select_point_in_time_prediction_state(self._load_prediction_overlay_replay(), now)
+
+    def _apply_prediction_overlay(self, signal, state: dict[str, Any] | None, now):
+        return apply_prediction_overlay(
+            signal,
+            state,
+            now,
+            enabled=self.config.prediction_overlay_enabled,
+            stale_seconds=self.config.prediction_overlay_stale_seconds,
+            fallback_mode=self.config.prediction_overlay_fallback_mode,
+            min_favourable_probability=self.config.prediction_overlay_min_favourable_probability,
+            min_posterior=self.config.prediction_overlay_min_posterior,
+            event_given_success=self.config.prediction_overlay_event_given_success,
+            kelly_base_fraction=self.config.prediction_overlay_kelly_base_fraction,
+            max_size_multiplier=self.config.prediction_overlay_max_size_multiplier,
+            score_scale=self.config.prediction_overlay_score_scale,
+        )
 
     def run(self) -> BacktestResult:
         histories = {symbol: self.provider.history(symbol) for symbol in self.config.universe}
@@ -46,8 +78,12 @@ class BacktestEngine:
                     positions.remove(position)
 
             candidates = []
+            current_time = next(iter(histories.values()))[index].time
+            prediction_state = self._prediction_overlay_state_for(current_time)
             for symbol, candles in histories.items():
                 signal = generate_signal(symbol, candles[: index + 1], self.config)
+                if signal is not None:
+                    signal = self._apply_prediction_overlay(signal, prediction_state, candles[index].time)
                 if signal is not None:
                     candidates.append(signal)
             candidates.sort(key=lambda signal: signal.score, reverse=True)
@@ -59,6 +95,7 @@ class BacktestEngine:
                 position = position_from_signal(signal, max(balance, 1.0), positions, self.config)
                 if not _apply_min_units_floor(position, signal, max(balance, 1.0), self.config):
                     continue
+                _apply_prediction_size_multiplier(position, signal.metadata)
                 if position.units > 0 and position.dv01 > 0:
                     positions.append(position)
                 if len(positions) >= self.config.max_open_positions:
@@ -79,6 +116,15 @@ class BacktestEngine:
 
 def _gross_pnl(position: RatesPosition, exit_price: float) -> float:
     return (exit_price - position.entry_price) * position.units * position.direction
+
+
+def _apply_prediction_size_multiplier(position: RatesPosition, metadata: dict[str, object]) -> None:
+    multiplier = prediction_size_multiplier(metadata)
+    if multiplier >= 1.0:
+        return
+    position.units *= multiplier
+    position.dv01 *= multiplier
+    position.metadata["prediction_size_multiplier_applied"] = round(multiplier, 4)
 
 
 def _apply_min_units_floor(position: RatesPosition, signal, equity: float, config: BondsConfig) -> bool:
