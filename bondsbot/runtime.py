@@ -242,12 +242,20 @@ def _execution_label(config: BondsConfig, research_only: bool) -> str:
     return "signals only"
 
 
-def _prediction_overlay_status_line(config: BondsConfig) -> str:
+def _prediction_overlay_status_line(config: BondsConfig, prediction_state: dict[str, Any] | None = None, *, checked: bool = False) -> str:
     if not config.prediction_overlay_enabled:
         return "Prediction overlay: disabled"
     state_file = str(config.prediction_overlay_state_file or "").strip()
     source = "state file configured" if state_file else "state file missing"
-    return f"Prediction overlay: enabled | {source} | fallback {config.prediction_overlay_fallback_mode}"
+    loaded = "state loaded" if isinstance(prediction_state, dict) else "no state loaded" if checked else "state not checked"
+    return f"Prediction overlay: enabled | {loaded} | {source} | fallback {config.prediction_overlay_fallback_mode}"
+
+
+def _prediction_overlay_status_from_snapshot(snapshot: dict[str, object], config: BondsConfig) -> str:
+    status = snapshot.get("prediction_overlay_status")
+    if isinstance(status, str) and status.strip():
+        return status
+    return _prediction_overlay_status_line(config)
 
 
 def _prediction_overlay_impact_line(row: dict[str, object]) -> str:
@@ -896,7 +904,7 @@ def _format_scan_message(snapshot: dict[str, object], config: BondsConfig) -> st
         f"📂 Open positions: {len(open_positions)} / {config.max_open_positions}",
         f"💷 Total P&L: {_format_signed_percent(session_pnl_pct)} | {_format_signed_money(session_pnl_amount)}",
         f"💰 Available Balance: {_format_money(snapshot.get('available_balance'))}",
-        _prediction_overlay_status_line(config),
+        _prediction_overlay_status_from_snapshot(snapshot, config),
     ]
     for row in open_positions[:4]:
         if isinstance(row, dict):
@@ -989,7 +997,7 @@ def _format_status_message(config: BondsConfig, state: dict[str, Any], equity: f
         f"Data: OANDA {oanda_count}/{total_count} | Fixture {fixture_count}/{total_count}",
         f"Mapped: {len(snapshot.get('mapped_oanda_instruments', {})) if isinstance(snapshot.get('mapped_oanda_instruments', {}), dict) else 0}/{total_count} | Tradeable {snapshot.get('tradeable_instrument_count', 0)}",
         f"DV01 caps: portfolio {_format_amount(risk_caps.get('portfolio_dv01'), 4)} | country {_format_amount(risk_caps.get('country_dv01'), 4)} | tenor {_format_amount(risk_caps.get('tenor_dv01'), 4)}",
-        _prediction_overlay_status_line(config),
+        _prediction_overlay_status_from_snapshot(snapshot, config),
         f"OANDA fetch issues: {failure_count} | Live order issues: {live_error_count} | Sync issues: {len(sync_errors)}",
         f"Telegram: commands online",
     ]
@@ -1210,7 +1218,7 @@ def run_scan(config: BondsConfig, client: OandaClient, state_store: StateStore, 
         "available_balance": round(available_balance, 2),
         "allocated_balance": round(_allocated_balance(open_positions), 2),
         "closed_positions": state.get("last_closed_positions", []),
-        "prediction_overlay_status": _prediction_overlay_status_line(config),
+        "prediction_overlay_status": _prediction_overlay_status_line(config, prediction_state, checked=True),
         "risk_caps": {
             "portfolio_dv01": round(max_portfolio_dv01(equity, config), 4),
             "country_dv01": round(max_country_dv01(equity, config), 4),
